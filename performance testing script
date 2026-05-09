@@ -1,0 +1,146 @@
+#!/bin/bash
+
+set -e
+
+BASE_DIR="$HOME/project"
+cd "$BASE_DIR"
+
+INTERFACE="enp0s3"
+RESOLVER="1.1.1.1"
+
+mkdir -p experiments/{baseline,delay50,delay100,loss1,loss5,dynamic_delay}
+
+echo "Cleaning previous tc rules..."
+sudo tc qdisc del dev $INTERFACE root 2>/dev/null || true
+
+echo "Checking Tranco dataset..."
+
+if [ ! -f top-1m.csv ]; then
+    echo "Downloading Tranco list..."
+    wget https://tranco-list.eu/top-1m.csv.zip
+    unzip -o top-1m.csv.zip
+fi
+
+echo "Preparing top 100 domains..."
+
+cut -d, -f2 top-1m.csv | head -n 100 > top100.txt
+shuf top100.txt > top100_random.txt
+
+run_queries() {
+
+    FLAG=$1
+    OUTPUT=$2
+    LABEL=$3
+
+    echo "Running $LABEL"
+
+    while read domain
+    do
+        latency=$( (/usr/bin/time -p kdig $FLAG @$RESOLVER $domain > /dev/null) 2>&1 | awk '/real/ {print $2}' )
+        echo "$domain $latency" >> "$OUTPUT"
+        sleep 1
+    done < top100_random.txt
+
+}
+
+#################################################
+# BASELINE
+#################################################
+
+echo "===== BASELINE ====="
+
+run_queries "" experiments/baseline/dns.txt "Baseline DNS"
+run_queries "+tls" experiments/baseline/dot.txt "Baseline DoT"
+run_queries "+https" experiments/baseline/doh.txt "Baseline DoH"
+
+#################################################
+# DELAY 50ms
+#################################################
+
+echo "===== DELAY 50ms ====="
+
+sudo tc qdisc add dev $INTERFACE root netem delay 50ms
+
+run_queries "" experiments/delay50/dns.txt "Delay50 DNS"
+run_queries "+tls" experiments/delay50/dot.txt "Delay50 DoT"
+run_queries "+https" experiments/delay50/doh.txt "Delay50 DoH"
+
+sudo tc qdisc del dev $INTERFACE root
+
+#################################################
+# DELAY 100ms
+#################################################
+
+echo "===== DELAY 100ms ====="
+
+sudo tc qdisc add dev $INTERFACE root netem delay 100ms
+
+run_queries "" experiments/delay100/dns.txt "Delay100 DNS"
+run_queries "+tls" experiments/delay100/dot.txt "Delay100 DoT"
+run_queries "+https" experiments/delay100/doh.txt "Delay100 DoH"
+
+sudo tc qdisc del dev $INTERFACE root
+
+#################################################
+# PACKET LOSS 1%
+#################################################
+
+echo "===== PACKET LOSS 1% ====="
+
+sudo tc qdisc add dev $INTERFACE root netem loss 1%
+
+run_queries "" experiments/loss1/dns.txt "Loss1 DNS"
+run_queries "+tls" experiments/loss1/dot.txt "Loss1 DoT"
+run_queries "+https" experiments/loss1/doh.txt "Loss1 DoH"
+
+sudo tc qdisc del dev $INTERFACE root
+
+#################################################
+# PACKET LOSS 5%
+#################################################
+
+echo "===== PACKET LOSS 5% ====="
+
+sudo tc qdisc add dev $INTERFACE root netem loss 5%
+
+run_queries "" experiments/loss5/dns.txt "Loss5 DNS"
+run_queries "+tls" experiments/loss5/dot.txt "Loss5 DoT"
+run_queries "+https" experiments/loss5/doh.txt "Loss5 DoH"
+
+sudo tc qdisc del dev $INTERFACE root
+
+#################################################
+# DYNAMIC DELAY
+#################################################
+
+echo "===== DYNAMIC DELAY ====="
+
+sudo tc qdisc add dev $INTERFACE root netem delay 20ms
+
+(
+while true
+do
+    sudo tc qdisc change dev $INTERFACE root netem delay 20ms
+    sleep 3
+    sudo tc qdisc change dev $INTERFACE root netem delay 120ms
+    sleep 3
+    sudo tc qdisc change dev $INTERFACE root netem delay 30ms
+    sleep 3
+    sudo tc qdisc change dev $INTERFACE root netem delay 150ms
+    sleep 3
+done
+) &
+
+DYNAMIC_PID=$!
+
+run_queries "" experiments/dynamic_delay/dns.txt "Dynamic DNS"
+run_queries "+tls" experiments/dynamic_delay/dot.txt "Dynamic DoT"
+run_queries "+https" experiments/dynamic_delay/doh.txt "Dynamic DoH"
+
+kill $DYNAMIC_PID
+
+sudo tc qdisc del dev $INTERFACE root
+
+echo "===== ALL EXPERIMENTS COMPLETED ====="
+
+wc -l experiments/*/*.txt
