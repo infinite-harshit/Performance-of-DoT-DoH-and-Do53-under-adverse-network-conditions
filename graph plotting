@@ -1,0 +1,248 @@
+import os
+import re
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+
+# -----------------------------
+# PLOT STYLE
+# -----------------------------
+
+plt.style.use("seaborn-v0_8-whitegrid")
+
+plt.rcParams.update({
+    "font.size": 11,
+    "axes.titlesize": 12,
+    "axes.labelsize": 11,
+    "legend.fontsize": 10
+})
+
+COLORS = {
+    "dns": "#1f77b4",
+    "dot": "#ff7f0e",
+    "doh": "#2ca02c"
+}
+
+MARKERS = {
+    "dns": "o",
+    "dot": "s",
+    "doh": "^"
+}
+
+# -----------------------------
+# CONFIG
+# -----------------------------
+
+DATA_DIR = "experiments"
+
+conditions = [
+    "baseline",
+    "delay50",
+    "delay100",
+    "loss1",
+    "loss5",
+    "dynamic_delay"
+]
+
+protocols = ["dns", "dot", "doh"]
+
+os.makedirs("graphs", exist_ok=True)
+
+# -----------------------------
+# LOAD LATENCY DATA
+# -----------------------------
+
+def load_latency(path):
+
+    latencies = []
+
+    with open(path) as f:
+        for line in f:
+
+            match = re.search(r"[0-9]*\.[0-9]+", line)
+
+            if match:
+                latencies.append(float(match.group()))
+
+    return np.array(latencies)
+
+data = {}
+
+for cond in conditions:
+
+    data[cond] = {}
+
+    for proto in protocols:
+
+        file_path = os.path.join(DATA_DIR, cond, f"{proto}.txt")
+
+        data[cond][proto] = load_latency(file_path)
+
+# -----------------------------
+# STATISTICS
+# -----------------------------
+
+rows = []
+
+for cond in conditions:
+    for proto in protocols:
+
+        values = data[cond][proto]
+
+        rows.append({
+            "Condition": cond,
+            "Protocol": proto.upper(),
+            "Mean": np.mean(values),
+            "Median": np.median(values),
+            "StdDev": np.std(values),
+            "P95": np.percentile(values, 95)
+        })
+
+stats_df = pd.DataFrame(rows)
+
+stats_df.to_csv("graphs/statistics_summary.csv", index=False)
+
+print("Statistics table generated")
+
+# -----------------------------
+# BOXPLOTS
+# -----------------------------
+
+for cond in conditions:
+
+    plt.figure(figsize=(6,4))
+
+    dataset = [
+        data[cond]["dns"],
+        data[cond]["dot"],
+        data[cond]["doh"]
+    ]
+
+    box = plt.boxplot(dataset, labels=["DNS","DoT","DoH"], patch_artist=True)
+
+    colors = [COLORS["dns"], COLORS["dot"], COLORS["doh"]]
+
+    for patch, color in zip(box['boxes'], colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.6)
+
+    plt.ylabel("Latency (seconds)")
+    plt.title(f"Latency Distribution ({cond})")
+
+    plt.tight_layout()
+
+    plt.savefig(f"graphs/boxplot_{cond}.png", dpi=300)
+
+    plt.close()
+
+# -----------------------------
+# CDF PER CONDITION
+# -----------------------------
+
+for cond in conditions:
+
+    plt.figure(figsize=(6,4))
+
+    for proto in protocols:
+
+        values = np.sort(data[cond][proto])
+        cdf = np.arange(1, len(values)+1) / len(values)
+
+        plt.plot(
+            values,
+            cdf,
+            label=proto.upper(),
+            color=COLORS[proto],
+            marker=MARKERS[proto],
+            markevery=10,
+            linewidth=2
+        )
+
+        p95 = np.percentile(values,95)
+
+        plt.axvline(
+            p95,
+            linestyle="--",
+            color=COLORS[proto],
+            alpha=0.4
+        )
+
+    plt.xlabel("Latency (seconds)")
+    plt.ylabel("CDF")
+    plt.title(f"CDF of Query Latency ({cond})")
+
+    plt.legend()
+    plt.tight_layout()
+
+    plt.savefig(f"graphs/cdf_{cond}.png", dpi=300)
+
+    plt.close()
+
+# -----------------------------
+# MEAN LATENCY BAR CHART
+# -----------------------------
+
+means_dns = []
+means_dot = []
+means_doh = []
+
+for cond in conditions:
+
+    means_dns.append(np.mean(data[cond]["dns"]))
+    means_dot.append(np.mean(data[cond]["dot"]))
+    means_doh.append(np.mean(data[cond]["doh"]))
+
+x = np.arange(len(conditions))
+width = 0.25
+
+plt.figure(figsize=(7,4))
+
+plt.bar(x-width, means_dns, width, label="DNS", color=COLORS["dns"])
+plt.bar(x, means_dot, width, label="DoT", color=COLORS["dot"])
+plt.bar(x+width, means_doh, width, label="DoH", color=COLORS["doh"])
+
+plt.xticks(x, conditions, rotation=20)
+
+plt.ylabel("Mean Latency (seconds)")
+plt.title("Mean Latency Comparison Across Network Conditions")
+
+plt.legend()
+plt.tight_layout()
+
+plt.savefig("graphs/mean_latency_comparison.png", dpi=300)
+
+plt.close()
+
+# -----------------------------
+# COMBINED CDF (BASELINE)
+# -----------------------------
+
+plt.figure(figsize=(6,4))
+
+for proto in protocols:
+
+    values = np.sort(data["baseline"][proto])
+    cdf = np.arange(1, len(values)+1) / len(values)
+
+    plt.plot(
+        values,
+        cdf,
+        label=proto.upper(),
+        color=COLORS[proto],
+        marker=MARKERS[proto],
+        markevery=10,
+        linewidth=2
+    )
+
+plt.xlabel("Latency (seconds)")
+plt.ylabel("CDF")
+plt.title("Baseline DNS Protocol Latency Comparison")
+
+plt.legend()
+plt.tight_layout()
+
+plt.savefig("graphs/baseline_combined_cdf.png", dpi=300)
+
+plt.close()
+
+print("All graphs saved in graphs/ directory")
